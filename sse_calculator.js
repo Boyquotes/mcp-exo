@@ -1,11 +1,15 @@
 import express from "express";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";;
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "crypto";
-import cors from "cors";
+import cors from "cors"
+
+
+// SSE Transport Instance
+let transport = null;
 
 // Create an MCP server
 const server = new McpServer({
@@ -105,15 +109,59 @@ server.prompt(
   })
 );
 
-// Connect to stdio for terminal-based interaction
-const stdioTransport = new StdioServerTransport();
+// Express App Instance
+const app = express();
 
-// Wrap in an immediately invoked async function to avoid top-level await
-(async () => {
+// CORS Configuration
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ['GET', 'POST'],
+  credentials: true,
+}));
+
+// SSE Connection Route Handler
+const handleSseConnection = async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  transport = new SSEServerTransport('/messages', res);
   try {
-    await server.connect(stdioTransport);
-    console.log('MCP Calculator server started successfully');
+    await server.connect(transport);
+    console.log('✅ MCP client connected via SSE');
   } catch (error) {
-    console.error('Failed to start MCP server:', error);
+    console.error('❌ Error connecting to MCP client:', error);
+    res.status(500).end();
   }
-})();
+};
+
+// Message Route Handler
+const handleMessages = async (req, res) => {
+  if (!transport) {
+    return res.status(503).json({
+      error: { code: -32003, message: 'SSE transport not started' }
+    });
+  }
+  
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error) {
+    console.error('❌ Error processing message:', error);
+    res.status(500).json({
+      error: {
+        code: -32000,
+        message: 'Internal server error'
+      }
+    });
+  }
+};
+
+// Route Registration
+app.get("/sse", handleSseConnection);
+app.post("/messages", handleMessages);
+
+// Server Start
+const port = 3002;
+app.listen(port, () => {
+  console.log(`✅ MCP server running on port ${port}`);
+});
